@@ -1,0 +1,25 @@
+process of ABOV Program : 
+1. Port init() 
+--> init all port ( usually function 0, output pushpull, no pu/pd) 
+--> init boot, reset, program pin, HSE pins 
+
+2.Clock 
+- Init struct scu_main_clock_cfg include : mclk_sel, mclk_div, hclk_div 
+- if use pll, init struct scu_pll_clock_cfg include: outdiv, postdiv1, postdiv2, prediv, pllmode, 
+pll source, pll_input_div 
+-HAL_SCU_UpdateMainClock(&cfg) -> config HSI, not PLL, mclk_div, hclk_div. 
+-HAL_SCU_EnableClockOut(SCU_CLOCK_OUT_SEL_MCLK, 5); --> Enable clock output on CLKO pin 
+
+
+--> Clock is configed from left to right 
+Ex: Use HSE_PLL 
+	. Enable HSE and wait for stable 
+	. Set up parameters for PLL: PLL_SEL, PLL_PREDIV, OUTDIV, POSTDIV1, POSTDIV2, PLL_MODE, PREDIV_PLL 
+	. Change from HSE to PLL by MCLK_SEL 
+	. Choose MCLK_DIV and HCLK_DIV 
+
+
+3.Main Loop 
+
+
+

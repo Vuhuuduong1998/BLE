@@ -1,0 +1,377 @@
+REPORT 040322
+
+1.GPIO BLINK LED 
+	.PortInit()
+		_MR --> ALternative function 
+		_CR --> push pull/ open drain/ input 
+		_PRCR --> pull up/ pull down 
+	.System_Setting_Config()
+		struct scu_pll_clock_cfg
+			{
+				uint8_t                         out_div;            /**< output divide value */
+				uint8_t                         post_div1;          /**< post divide 1 value */
+				uint8_t                         post_div2;          /**< post divide 2 value */
+				uint8_t                         pre_div;            /**< previous divide value */
+				enum scu_pll_mode               p_mode;             /**< pll mode */
+				enum scu_pll_clock_src          pclk_src;           /**< pll clock source */
+				enum scu_pll_clock_input_div    p_input_clk_div;    /**< pll inpurt clcok divide value */
+			};
+		struct scu_main_clock_cfg
+			{
+				enum scu_clock          mclk_sel;       /**< system main clock */
+				enum scu_main_clock_div mclk_div;       /**< divide the main clock and use the AHB clock */
+				enum scu_ahb_clock_div  hclk_div;       /**< divide the AHB clock and use the peripheral clock */
+				uint32_t                mclk_hz;        /**< frequncy of main clock */
+			};
+		HAL_SCU_SetPLLConfig(struct scu_pll_clock_cfg *cfg)
+			_SCU_CSCR: HSECON = 1 --> Enable HSE 
+			Delay 10 ms
+			_SCU_SCCR : MCLKSEL = 110 --> HSE
+			_SCU_SCCR : PLLCLKSEL = 1 --> PLL for HSE 
+			HAL_SCU_SetPLLPrediv(enum scu_pll_clock_input_div plldiv)
+				_SCU_SCCR: PLLPREDIV 
+			_SCU_PLLCON: PLLEN = 1 --> Enable PLL 
+			Delay for stabilization
+			_SCU_PLLCON: OUTDIV, PREDIV, POSTDIV1, POSTDIV2, PLLMODE
+			_SCU_PLLCON: BYPASSB = 1, PLLRSTB = 1; CTRLOTP 
+			wait PLL in lock state : READ _SCU_PLLCON : PLLLOCK = 1; 
+			_SCU_SCCR: config HCLK and PCLK : HCLKDIV, PCLKDIV 
+			_SCU_SCCR: MCLKSEL = 7 --> change mainclock from HSE to PLL 
+			Flash Wait 2: CFMC->CONF: LATENCY bits
+		HAL_SCU_UpdateMainClock(&cfg)
+			SystemDelayCount = (uint32_t)(((uint64_t)SystemCoreClock * 100) / 1000000);
+			SCU_FlashLatencySet(hclk);
+			SCU_FlashLatencySet(hclk);
+		HAL_SCU_EnableClockOut(SCU_CLOCK_OUT_SEL_MCLK, 5) : Enable CLKO and choose MCLK DIV 5, Config the CLKOINSEL, CLKODIV and CLKOEN. 
+	.HAL_GPIO_SetMode(app_led.port, app_led.pin, GPIO_MODE_OUTPUT);
+	.HAL_GPIO_SetOutput(app_led.port, app_led.pin, GPIO_OUTPUT_PUSH_PULL);
+	.HAL_GPIO_SetPin(app_led.port, app_led.pin);
+	.HAL_GPIO_ClearPin(app_led.port, app_led.pin);
+	
+Report 040423
+
+2. Clock monitoring 
+
+	.HAL_SCU_EnableClockMonitor(SCU_MON_CLOCK_HSE, app_sysclock_failure_handler, NULL, 3);
+	.struct scu_ctrl_block
+	{
+		scu_clk_fail_handler_t          mclk_handler;
+		void *                          mclk_context;
+		scu_clk_fail_handler_t          lse_handler;
+		void *                          lse_context;
+		scu_clk_fail_handler_t          hse_handler;
+		void *                          hse_context;
+		uint8_t                         pll_configured;
+		enum scu_clock                  mclk;
+		enum scu_pll_clock_src          pclk_src;
+		enum scu_pll_clock_input_div    p_input_clk_div;
+	};
+			
+	_SCU_CSCR: Enable HSE/HSI/lSI/LSE 
+	_SCU_CMR: Enable HSEIE ( Error interrupt), Enable HSEMNT ( HSE monitoring) 
+	when HSE Fail ( by disable HSE) --> call the interrupt handler --> call the call back function 
+	
+	--> understand the way to monitor the clock by using interrupt  
+	
+3. Clock output  
+	.HAL_GPIO_SetFunction(PORTC, PIN9, PC9_MUX_CLKO); --> want to set the clock out pin, we need to set the Alternative function for GPIO pin 
+	.HAL_SCU_EnableClockOut(SCU_CLOCK_OUT_SEL_MCLK, 5); --> Enable the clock out ( we can measure on GPIO pin) 
+	
+	
+4. GPIO_extint 
+
+	HAL_GPIO_SetDebounceClock(app_btn.port, APP_GPIO_DBC_CLK_SRC, APP_GPIO_DBC_CLK_DIV);
+	HAL_GPIO_SetDebounce(app_btn.port, app_btn.pin, 1);		
+		Pn_DER: Port n debounce enable register
+	HAL_GPIO_SetIRQHandler(PORTB, app_btn.pin, app_gpio_irq_handler, NULL);
+		g_gcb[i].port = port;
+		g_gcb[i].pin = pin;
+		g_gcb[i].handler = handler;
+		g_gcb[i].context = context;
+	HAL_GPIO_EnableIRQ(app_btn.port, app_btn.pin,
+                       GPIO_IRQ_TRIG_EDGE,
+                       GPIO_IRQ_FALLING_AND_RISING,
+                       DRIVER_PRIORITY_LOWEST);
+		
+		_GPIO_IER: Interrupt Enable: Choose edge trigger or level trigger 
+		_GPIO_ICR: interrupt control: choose failing or rising edge 
+		_GPIO_ISR: write 0x03 to clear the interrupt flag 
+		GPIO_SetupIRQ(port, irq_prio); this MCU has 4 interrupt ( port a, port b, port c, port d --> interrupt follow by port) 
+			NVIC_ClearPendingIRQ(GPIO_IRQ_NUM(port));
+			NVIC_SetPriority(GPIO_IRQ_NUM(port), irq_prio);
+			NVIC_EnableIRQ(GPIO_IRQ_NUM(port))
+		void GPIOA_IRQHandler(void)
+			GPIO_Handler(PORTA);
+				gcb = &g_gcb[i]; gcb->handler(gcb->context)
+				
+5. UART INTERRUPT 
+
+	.Port_Configure_UART(); : Configure gpio to uart : ALT function 
+	
+	.struct uart_cfg
+		{
+			uint32_t                baudrate;   /**< baud rate */
+			enum uart_data_bit      data_bit;   /**< data bit */
+			enum uart_parity_bit    parity_bit; /**< parity bit */
+			enum uart_stop_bit      stop_bit;   /**< stop bit */
+			uint8_t                 irq_prio;   /**< interrupt priority */
+		};
+		
+	.HAL_UART_Init(UART_ID_0, &cfg, app_uart_irq_handler, NULL);
+		SCU_PER2: Enable UART0 
+		SCU_PCER2: Enable Clock for UART0 
+		SCU_MCCR7: UARTCSEL, UARTCDIV 
+		
+	struct uart_ctrl_block
+	{
+		uart_irq_handler_t  handler;
+		void *              context;
+		uint32_t            tx_busy : 1;
+		uint32_t            rx_busy : 1;
+		uint8_t *           tx_buf;
+		uint8_t *           rx_buf;
+		uint32_t            tx_len;
+		uint32_t            rx_len;
+		volatile uint32_t   tx_count;
+		volatile uint32_t   rx_count;
+		enum dma_ch         tx_dma_ch;
+		uint8_t             tx_dma_enable;
+		enum dma_ch         rx_dma_ch;
+		uint8_t             rx_dma_enable;
+	};
+	
+	enum uart_id
+	{
+		UART_ID_0   = 0,                        /**< UART 0 */
+		UART_ID_1   = 1,                        /**< UART 1 */
+		UART_ID_MAX = 2,                        /**< UART max */
+	};
+	
+	struct uart_cfg
+	{
+		uint32_t                baudrate;   /**< baud rate */
+		enum uart_data_bit      data_bit;   /**< data bit */
+		enum uart_parity_bit    parity_bit; /**< parity bit */
+		enum uart_stop_bit      stop_bit;   /**< stop bit */
+		uint8_t                 irq_prio;   /**< interrupt priority */
+	};
+
+	Wait Receive Empty 
+	Wait transmit Empty 
+	
+	uart->IER = 0; --> Disable All interrupt 
+    uart->LCR = 0; --> Line control Register 
+    uart->DCR = 0; --> Data not inverted
+	
+	static int32_t UART_Configure(struct uart_ctrl_block *ucb,
+                              UART_Type *uart,
+                              struct uart_cfg *cfg)
+							  
+			UART_LCR: DLEN --> Choose bits transmit: 5,6,7,8
+			UART_LCR: PEN, STICKP --> choose parity 
+			UART_LCR: STOPBIT --> 1,1.5, 2 stop bit
+			uart->BDR --> calculate int baudrate 
+			uart->BFR --> calculate fraction baudrate 
+			
+							  
+	NVIC_ClearPendingIRQ(UART_IRQ_NUM(id));
+    NVIC_SetPriority(UART_IRQ_NUM(id), cfg->irq_prio);
+    NVIC_EnableIRQ(UART_IRQ_NUM(id));
+	
+	int32_t HAL_UART_Transmit(enum uart_id id, uint8_t *out, uint32_t len,
+                          enum uart_io_type io_type)
+			UARTn_THR: UART n transmit data hold register
+			
+	
+	---> Note: THRE = 1 -> UART_THR is empty, TEMT = 1--> Transmit shift register is empty 
+	
+6. UART_Interrupt DMA 
+	Port_Init();
+	System_Setting_Config(); HSEPLL, Mclk = 80 Mhz 
+	Port_Configure_UART(); --> ALT = RX, Input , ALT = TX, Output 
+	struct uart_cfg cfg =
+    {
+        .baudrate = APP_UART_BAUD,
+        .data_bit = UART_DATA_BIT_8,
+        .parity_bit = UART_PARITY_BIT_NONE,
+        .stop_bit = UART_STOP_BIT_1,
+        .irq_prio = DRIVER_PRIORITY_LOWEST,
+    };
+	HAL_UART_Init(UART_ID_0, &cfg, app_uart_irq_handler, NULL);
+			static struct uart_ctrl_block g_ucb[UART_ID_MAX];
+			uart = UART_REG(id);
+			SCU->PER2
+			SCU->PCER2
+			SCU->MCCR7
+			uart->IER : interrupt reg 
+			uart->LCR : line control reg 
+			uart->DCR : Data invert reg 
+			UART_Configure(struct uart_ctrl_block *ucb,
+									  UART_Type *uart,
+									  struct uart_cfg *cfg)		
+				
+				cfg_val |= (cfg->data_bit << UART_LCR_DLEN_Pos); --> data 8 bit 
+				cfg_val |= (0x00UL << UART_LCR_PEN_Pos); --> parity none 
+				cfg_val |= (0 << UART_LCR_STOPBIT_Pos); --> stop bit = 1 
+				uart->LCR --> line control reg ( data, parity, stop bit) 
+				uart->BDR --> int baudrate 
+				uart->BFR --> fraction baudrate 
+			NVIC_ClearPendingIRQ(UART_IRQ_NUM(id));	
+			NVIC_SetPriority(UART_IRQ_NUM(id), cfg->irq_prio);
+			NVIC_EnableIRQ(UART_IRQ_NUM(id));
+			
+	HAL_UART_Transmit(UART_ID_0, (uint8_t *)msg, strlen(msg), UART_IO_TYPE_NON_BLOCK);
+		uart->LSR & UART_LSR_THRE_Msk
+		uart->IER |= (1 << UART_IER_THREIE_Pos);
+	HAL_UART_SetTransmitDMA(UART_ID_0, DMA_ID_0, 1);
+		struct dma_cfg
+		{
+			enum dma_peri       peri;               /**< peripheral id */
+			enum dma_bus_size   size;               /**< bus size */
+			enum dma_dir        dir;                /**< direction */
+		};
+		enum dma_peri
+		{
+			DMA_PERI_NONE       = 0,                /**< peripheral id none */
+			DMA_PERI_UART0_RX   = 1,                /**< peripheral id UART0 RX */
+			DMA_PERI_UART0_TX   = 2,                /**< peripheral id UART0 TX */
+			DMA_PERI_UART1_RX   = 3,                /**< peripheral id UART1 RX */
+			DMA_PERI_UART1_TX   = 4,                /**< peripheral id UART1 TX */
+			DMA_PERI_SPI_RX    = 5,                /**< peripheral id SPI RX */
+			DMA_PERI_SPI_TX    = 6,                /**< peripheral id SPI TX */
+			DMA_PERI_ADC_RX    = 7,                /**< peripheral id ADC RX */
+			DMA_PERI_CRC_TX     = 8,                /**< peripheral id CRC TX */
+		};	
+		enum dma_bus_size
+		{
+			DMA_BUS_SIZE_BYTE       = (0UL),        /**< size = 1 byte */
+			DMA_BUS_SIZE_HALFWORD   = (1UL),        /**< size = 2 bytes */
+			DMA_BUS_SIZE_WORD       = (2UL),        /**< size = 4 bytes */
+		};
+		enum dma_dir
+		{
+			DMA_DIR_MEM_TO_PERI = 0,                /**< memory to peripheral */
+			DMA_DIR_PERI_TO_MEM = 1,                /**< peripheral to memory */
+		};
+		HAL_DMA_Init()
+			SCU->PER1 |= (0x01UL << SCU_PER1_DMA_Pos);
+			SCU->PCER1 |= (0x01UL << SCU_PCER1_DMA_Pos);
+		int32_t HAL_DMA_Setup(enum dma_ch ch, struct dma_cfg *cfg)
+			DMA_CR_PERISEL_Pos
+			DMA_CR_SIZE_Pos
+			DMA_CR_DIR_Pos
+		HAL_DMA_Start(ucb->rx_dma_ch, (uint32_t)&uart->RBR, (uint32_t)ucb->rx_buf, ucb->rx_len);
+			DMA_CR_TRANSCNT_Pos;
+			DMA_CR_DIR_Pos
+			DMA_SR_DMAEN_Pos
+		UART_IRQHandler(enum uart_id id)
+			UART_IIR_RX_DMA_DONE
+			uart->IER &= ~(1 << UART_IER_DRXIEN_Pos);
+            event |= UART_EVENT_RECEIVE_DONE;
+			ucb->handler(event, ucb->context);
+			
+			--> after dma or interrupt occurs, we need to call function to re-initialize them ( because in function handler, we disable interrupt and dma disable automatically) 
+			
+7. Watchdog Timer Reset 
+
+	struct wdt_cfg
+	{
+		enum wdt_clk_src    clk_src;            /**< clock source */
+		enum wdt_clk_div    clk_div;            /**< clock divider */
+		enum wdt_mode       mode;               /**< mode */
+		uint8_t             irq_prio;           /**< interrupt priority */
+	};
+	enum wdt_mode
+	{
+		WDT_MODE_RESET,                         /**< reset on expiration */
+		WDT_MODE_IRQ,                           /**< interrupt on expiration */
+	};
+8. sleep mode 
+9. deep sleep mode 
+To enter STOP mode, first set SCU_SMR[8] = 1 and use the WFI command. In STOP mode, all
+peripherals except WDT and FRT of internal VDC domain are in power off state. 
+WFI
+SCB_SCR[2]* = ‘1’
+(SLEEPDEEP = ‘1’)
+SCU_SMR[8] = ‘1’
+(VDCAON = ‘1’)
+
+10. ADC Polling 
+
+struct adc_ctrl_block
+{
+    adc_irq_handler_t   handler;
+    void *              context;
+    enum adc_mode       mode;
+    uint32_t *          buf;
+    uint32_t            len;
+    uint32_t            count;
+    uint8_t             busy;
+    uint8_t             seq_cnt;
+    uint8_t             trg_sel;
+    enum dma_ch         dma_ch;
+    uint8_t             dma_enable;
+};
+
+struct adc_cfg
+{
+    enum adc_mode           mode;           /**< ADC_MODE_SINGLE, ADC_MODE_MULTI ,ADC_MODE_BURST */
+    uint32_t                dma_opt;        /**< DMA option = ENABLE or DISABLE */
+    uint32_t                sampling_time;  /**< sampleing time */
+    uint32_t                seq_cnt;        /**< sequence count = count value 2~8  */
+    uint32_t                restart_en;     /**< RestartEn = ENABLE or DISABLE */
+    enum adc_ext_clk        use_clk;        /**< Internal clock, External clock (MCCR clock) */
+    uint32_t                in_clk_div;     /**< clock divider */
+    uint8_t                 irq_prio;       /**< interrupt priority */
+};
+
+#define APP_ADC_CONFIG                  \
+    {                                   \
+        .mode = ADC_MODE_SINGLE,        \
+        .sampling_time = 6,             \
+        .seq_cnt = 1,                   \
+        .restart_en = 0,                \
+        .use_clk = ADC_INTERNAL_CLK,    \
+        .in_clk_div = 7,                \
+        .irq_prio = DRIVER_PRIORITY_3,  \
+    }
+	
+	HAL_ADC_Calibration();
+	HAL_ADC_Init(ADC_ID_0, &cfg, NULL, NULL);
+		ADC_MR : DMAEN: use DMA or not 
+		ADC_MR: SEQCNT = 1 --> 1 sequence 
+		ADC_MR: ADEN: Enable ADC 
+		ADC_MR: ARST: Restart at the end of sequency 
+		ADC_MR: ADMOD: ADC mode = 0 --> single/sequential conversion mode 
+		
+		HAL_ADC_SetConvSamplingTime(id, ADC_CONVERSION_SEQUENCE_0, cfg->sampling_time);
+			ADC_CSTR1: set sampling time 
+			ADC_CSTR2: set sampling time 
+			sampling_time = (2 + CSTR1/CSTR2 ) * ADC_Clk 
+		ADC_CCR : ADC div 
+		ADC_CR: ASTOP = 1 --> stop mode 
+		
+	HAL_ADC_SelectChannel(ADC_ID_0, ADC_SEQUENCE_ID_0, i);
+	HAL_ADC_StartSingle(enum adc_id id, uint32_t *data, enum adc_io_type io_type)
+	
+	
+11. ADC sequence mode  
+
+#define APP_ADC_CONFIG                  \
+    {                                   \
+        .mode = ADC_MODE_MULTI,         \
+        .sampling_time = 6,             \
+        .seq_cnt = 3,                   \
+        .restart_en = 0,                \
+        .use_clk = ADC_INTERNAL_CLK,    \
+        .in_clk_div = 7,                \
+        .irq_prio = DRIVER_PRIORITY_3,  \
+    }
+#define APP_TIMER_CONFIG                   \
+{                                      \
+	.mode = TIMER_MODE_PERIODIC,       \
+	.clk_sel = TIMER_CLK_DIV_16_PCLK,  \
+	.prescaler = 500,                  \
+	.adc_trig = TIMER_ADC_TRIG_ENABLE, \
+	.irq_prio = DRIVER_PRIORITY_3,     \
+}
